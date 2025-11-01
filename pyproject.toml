@@ -1,0 +1,17 @@
+[project]
+name = "fbi-to-rss"
+version = "0.1.0"
+description = "Scrape FBi radio program episodes and generate podcast RSS feeds"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "feedgen>=0.10.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
