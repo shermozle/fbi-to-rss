@@ -618,6 +618,38 @@ class FBIRadioScraper:
         
         return None
     
+    def parse_date_from_url(self, url: str) -> Optional[datetime]:
+        """Parse date from episode URL pattern like 'wildcard-with-stuart-coupe-28th-october-2025'."""
+        if not url:
+            return None
+        
+        # Pattern: episodes/wildcard-with-stuart-coupe-28th-october-2025
+        # Extract date part: 28th-october-2025
+        url_match = re.search(r'(\d{1,2})(?:st|nd|rd|th)-(\w+)-(\d{4})', url, re.I)
+        if url_match:
+            day = int(url_match.group(1))
+            month_str = url_match.group(2).lower()
+            year = int(url_match.group(3))
+            
+            # Convert month name to number
+            months = {
+                'january': 1, 'jan': 1, 'february': 2, 'feb': 2, 'march': 3, 'mar': 3,
+                'april': 4, 'apr': 4, 'may': 5, 'june': 6, 'jun': 6,
+                'july': 7, 'jul': 7, 'august': 8, 'aug': 8, 'september': 9, 'sep': 9, 'sept': 9,
+                'october': 10, 'oct': 10, 'november': 11, 'nov': 11, 'december': 12, 'dec': 12
+            }
+            
+            month = months.get(month_str)
+            if month:
+                try:
+                    dt = datetime(year, month, day, tzinfo=timezone.utc)
+                    return dt
+                except ValueError:
+                    # Invalid date (e.g., Feb 30)
+                    return None
+        
+        return None
+    
     def get_episodes(self) -> Tuple[List[Dict], str]:
         """Get all episodes with their metadata."""
         print(f"Fetching program page: {self.program_url}")
@@ -693,8 +725,20 @@ class FBIRadioScraper:
         # Process episodes - extract audio URLs and format
         episodes = []
         for ep in episodes_data:
-            # Parse date
-            episode_date = self.parse_date(ep.get('airedAt', '')) or datetime.now(timezone.utc)
+            # Parse date - try airedAt first, then URL fallback
+            episode_date = None
+            aired_at = ep.get('airedAt', '')
+            if aired_at:
+                episode_date = self.parse_date(aired_at)
+            
+            # If no date from JSON, try to extract from URL
+            if not episode_date and 'url' in ep:
+                episode_date = self.parse_date_from_url(ep['url'])
+            
+            # Last resort: use current date (but this shouldn't happen)
+            if not episode_date:
+                print(f"  Warning: Could not parse date for {ep.get('title', 'Untitled')}, using current date")
+                episode_date = datetime.now(timezone.utc)
             
             # Parse description
             description = self.parse_description(ep.get('description', ''))
