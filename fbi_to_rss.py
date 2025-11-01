@@ -239,7 +239,6 @@ class FBIRadioScraper:
                 url = match.group(0)
                 if not url.startswith('http'):
                     url = 'https://' + url
-                print(f"    Debug: Found audio URL directly in HTML")
                 return url
         
         # Also try searching for UUIDs directly in HTML using regex
@@ -255,9 +254,6 @@ class FBIRadioScraper:
         unique_uuids = [u for u in unique_uuids if u.lower() != org_id.lower()]
         if build_id:
             unique_uuids = [u for u in unique_uuids if u.lower() != build_id.lower()]
-            print(f"    Debug: Filtered out build ID: {build_id[:8]}...")
-        
-        print(f"    Debug: Found {len(unique_uuids)} UUIDs directly in HTML (excluding org_id)")
         
         # The show ID might not be on the episode page - try to get it from known values, omnyStudioClip, or program page
         show_uuid_direct = None
@@ -267,7 +263,6 @@ class FBIRadioScraper:
             # Use known show ID for this program
             show_uuid_direct = self.KNOWN_SHOW_IDS[self.program_slug]
             self.show_id = show_uuid_direct
-            print(f"    Debug: Using known show ID for {self.program_slug}: {show_uuid_direct[:8]}...")
         else:
             # First try to extract from omnyStudioClip in the JSON
             json_data = self.extract_json_data(html)
@@ -280,7 +275,6 @@ class FBIRadioScraper:
                     if show_id_match:
                         show_uuid_direct = show_id_match.group(1)
                         self.show_id = show_uuid_direct
-                        print(f"    Debug: Found show ID from omnyStudioClip: {show_uuid_direct[:8]}...")
             
             # If not found, try to extract show ID from program page
             if not show_uuid_direct:
@@ -291,7 +285,6 @@ class FBIRadioScraper:
                     if omny_config_match:
                         show_uuid_direct = omny_config_match.group(1)
                         self.show_id = show_uuid_direct
-                        print(f"    Debug: Found show ID from program page config: {show_uuid_direct[:8]}...")
                     else:
                         # Try extracting UUIDs from program page
                         program_uuids = re.findall(uuid_pattern, program_html, re.I)
@@ -301,7 +294,6 @@ class FBIRadioScraper:
                             if uuid not in unique_uuids and uuid != org_id:  # Show ID shouldn't be in episode page
                                 show_uuid_direct = uuid
                                 self.show_id = uuid  # Cache it
-                                print(f"    Debug: Found show ID from program page: {uuid[:8]}...")
                                 break
         
         if len(unique_uuids) >= 1:
@@ -323,13 +315,11 @@ class FBIRadioScraper:
             # If we found show ID from program page, use it
             if show_uuid_direct:
                 direct_url = f"https://traffic.omny.fm/d/clips/{org_id}/{show_uuid_direct}/{clip_uuid_direct}/audio.mp3"
-                print(f"    Debug: Constructing URL with show from program page: show={show_uuid_direct[:8]}... clip={clip_uuid_direct[:8]}...")
                 return direct_url
             elif len(unique_uuids) >= 2:
                 # Fallback: use first UUID as show, last as clip
                 show_uuid_direct = unique_uuids[0]
                 direct_url = f"https://traffic.omny.fm/d/clips/{org_id}/{show_uuid_direct}/{clip_uuid_direct}/audio.mp3"
-                print(f"    Debug: Constructing URL from episode page UUIDs: show={show_uuid_direct[:8]}... clip={clip_uuid_direct[:8]}...")
                 return direct_url
         
         # If not found via direct UUID search, try extracting from JSON data
@@ -337,9 +327,7 @@ class FBIRadioScraper:
         # Extract JSON data to find UUIDs
         json_data = self.extract_json_data(html)
         if not json_data:
-            print(f"    Debug: Failed to extract JSON data from episode page")
             return None
-        print(f"    Debug: Extracted JSON data successfully")
         
         # Find all UUIDs in the JSON structure, tracking their context
         uuid_to_info = {}  # uuid -> {'type': 'clip'|'show'|'program', 'context': ...}
@@ -392,12 +380,6 @@ class FBIRadioScraper:
         clip_uuid = None
         show_uuid = None
         all_uuids = list(uuid_to_info.keys())
-        
-        print(f"    Debug: Found {len(all_uuids)} UUIDs in JSON")
-        if len(all_uuids) > 0:
-            for i, uuid in enumerate(all_uuids[:3]):
-                info = uuid_to_info.get(uuid, {})
-                print(f"    Debug: UUID {i+1}: {uuid[:20]}... (type={info.get('type', 'unknown')}, typename={info.get('typename', 'N/A')[:30]})")
         
         # The clip UUID is often associated with a title that has "uuid" in the JSON
         # Look for title objects with uuid - this is the clip ID
@@ -460,24 +442,20 @@ class FBIRadioScraper:
             show_uuid = all_uuids[0]
         elif not clip_uuid:
             # No UUIDs found at all
-            print(f"    Debug: No UUIDs found in JSON data")
             return None
         
         # Construct URL - we need showId and clipId
         if clip_uuid:
             if show_uuid and show_uuid != clip_uuid:
                 url = f"https://traffic.omny.fm/d/clips/{org_id}/{show_uuid}/{clip_uuid}/audio.mp3"
-                print(f"    Debug: Constructed URL with show={show_uuid[:8]}... clip={clip_uuid[:8]}...")
                 return url
             else:
                 # If we only have clip UUID, try different combinations
                 # Sometimes the show ID is the same as org ID or program ID
                 # Try: orgId/showId/clipId where showId might be program-related
-                print(f"    Debug: Only found clip UUID, trying different combinations")
                 # Try clip as both show and clip
                 return f"https://traffic.omny.fm/d/clips/{org_id}/{clip_uuid}/{clip_uuid}/audio.mp3"
         
-        print(f"    Debug: Failed to construct URL - clip_uuid={clip_uuid}, show_uuid={show_uuid}, org_id={org_id}")
         return None
     
     def _find_omny_clip_reference(self, json_data):
@@ -652,7 +630,6 @@ class FBIRadioScraper:
     
     def get_episodes(self) -> Tuple[List[Dict], str]:
         """Get all episodes with their metadata."""
-        print(f"Fetching program page: {self.program_url}")
         html = self.fetch_page(self.program_url)
         if not html:
             return [], self.program_slug
@@ -674,10 +651,8 @@ class FBIRadioScraper:
         # Fallback: extract from HTML links
         if not episodes_data:
             episode_links = self.extract_episode_links_from_html(html)
-            print(f"Found {len(episode_links)} episode links from HTML")
             
             for i, episode_url in enumerate(episode_links, 1):
-                print(f"Processing episode {i}/{len(episode_links)}: {episode_url}")
                 episode_html = self.fetch_page(episode_url)
                 if not episode_html:
                     continue
@@ -737,7 +712,6 @@ class FBIRadioScraper:
             
             # Last resort: use current date (but this shouldn't happen)
             if not episode_date:
-                print(f"  Warning: Could not parse date for {ep.get('title', 'Untitled')}, using current date")
                 episode_date = datetime.now(timezone.utc)
             
             # Parse description
@@ -746,14 +720,9 @@ class FBIRadioScraper:
             # Get audio URL by fetching episode page
             audio_url = None
             if 'url' in ep:
-                print(f"  Fetching audio URL for: {ep.get('title', 'Untitled')}")
                 episode_html = self.fetch_page(ep['url'])
                 if episode_html:
                     audio_url = self.extract_audio_url_from_episode_page(episode_html)
-                    if audio_url:
-                        print(f"  Found audio URL: {audio_url[:80]}...")
-                    else:
-                        print(f"  Warning: No audio URL found for {ep.get('title', 'Untitled')}")
             
             episodes.append({
                 'title': ep.get('title', 'Untitled Episode'),
@@ -764,9 +733,29 @@ class FBIRadioScraper:
             })
         
         # Sort by date (reverse chronological - newest first)
-        episodes.sort(key=lambda x: x['date'], reverse=True)
+        # Filter out episodes without valid dates for sorting
+        valid_episodes = [ep for ep in episodes if ep.get('date') is not None]
+        episodes_without_dates = [ep for ep in episodes if ep.get('date') is None]
         
-        print(f"Found {len(episodes)} episodes")
+        # Sort valid episodes by date (newest first - reverse chronological)
+        # Use timestamp for reliable sorting - ensure we're sorting by actual datetime objects
+        def get_sort_key(ep):
+            date = ep.get('date')
+            if date is None:
+                return 0
+            # If it's a datetime object, use timestamp
+            if hasattr(date, 'timestamp'):
+                return date.timestamp()
+            # Otherwise try to convert to timestamp
+            try:
+                return float(date)
+            except (TypeError, ValueError):
+                return 0
+        
+        valid_episodes.sort(key=get_sort_key, reverse=True)
+        
+        # Put episodes without dates at the end
+        episodes = valid_episodes + episodes_without_dates
         return episodes, program_name
 
 
@@ -790,7 +779,29 @@ class RSSFeedGenerator:
         fg.load_extension('podcast')
         fg.podcast.itunes_category('Music')
         
-        for episode in episodes:
+        # Ensure episodes are sorted (feedgen might not preserve order)
+        # Sort by pubDate in reverse chronological order (newest first)
+        # IMPORTANT: feedgen preserves the order entries are added, so we MUST sort here
+        def get_sort_timestamp(ep):
+            date = ep.get('date')
+            if date is None:
+                # Put episodes without dates at the end
+                return float('-inf')
+            if hasattr(date, 'timestamp'):
+                return date.timestamp()
+            # Fallback for non-datetime dates
+            try:
+                return float(date)
+            except (TypeError, ValueError):
+                return float('-inf')
+        
+        # Sort in reverse chronological order (newest first)
+        # reverse=True means larger timestamps (newer dates) come first
+        sorted_episodes = sorted(episodes, key=get_sort_timestamp, reverse=True)
+        
+        # IMPORTANT: feedgen preserves the order entries are added
+        # We must add entries in reverse chronological order (newest first)
+        for episode in sorted_episodes:
             fe = fg.add_entry()
             fe.title(episode['title'])
             fe.link(href=episode['url'])
@@ -805,8 +816,72 @@ class RSSFeedGenerator:
             
             fe.id(episode['url'])
         
-        # Write RSS feed
-        fg.rss_file(output_file, pretty=True)
+        # CRITICAL: feedgen may reorder entries by pubDate automatically when generating RSS
+        # We'll generate the RSS as a string, parse it, reorder items, and write manually
+        from xml.etree import ElementTree as ET
+        from xml.dom import minidom
+        
+        # Generate RSS as string
+        rss_str = fg.rss_str(pretty=True)
+        
+        # Parse the XML
+        root = ET.fromstring(rss_str)
+        
+        # Find the channel element
+        channel = root.find('channel')
+        if channel is not None:
+            # Get all item elements
+            items = channel.findall('item')
+            
+            # Sort items by pubDate in reverse chronological order (newest first)
+            def get_item_timestamp(item):
+                pub_date_elem = item.find('pubDate')
+                if pub_date_elem is not None and pub_date_elem.text:
+                    try:
+                        # Parse RFC 822 date format: "Sat, 01 Nov 2025 00:00:00 +0000"
+                        from email.utils import parsedate_tz
+                        date_tuple = parsedate_tz(pub_date_elem.text)
+                        if date_tuple:
+                            import time
+                            timestamp = time.mktime(date_tuple[:9]) - (date_tuple[9] or 0)
+                            return timestamp
+                    except:
+                        pass
+                return 0
+            
+            # Sort items by date (newest first)
+            items_sorted = sorted(items, key=get_item_timestamp, reverse=True)
+            
+            # Remove all items from channel
+            for item in items:
+                channel.remove(item)
+            
+            # Re-add items in sorted order (newest first)
+            for item in items_sorted:
+                channel.append(item)
+        
+        # Write the reordered XML
+        # Convert back to string with proper formatting
+        rough_string = ET.tostring(root, encoding='unicode')
+        reparsed = minidom.parseString(rough_string)
+        pretty_xml = reparsed.toprettyxml(indent="  ", encoding='utf-8')
+        
+        # Write to file
+        with open(output_file, 'wb') as f:
+            # Skip the XML declaration that minidom adds (we want just the content)
+            lines = pretty_xml.decode('utf-8').split('\n')
+            # Find where the actual RSS content starts (after <?xml...?>)
+            content_start = 0
+            for i, line in enumerate(lines):
+                if line.strip().startswith('<rss'):
+                    content_start = i
+                    break
+            
+            # Write from the RSS tag onwards
+            content = '\n'.join(lines[content_start:])
+            # Remove extra blank lines
+            content = '\n'.join([line for line in content.split('\n') if line.strip() or line == ''])
+            f.write(content.encode('utf-8'))
         print(f"Generated RSS feed: {output_file}")
 
 
