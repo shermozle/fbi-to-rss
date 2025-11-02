@@ -33,6 +33,12 @@ class FBIRadioScraper:
         'utility-fog': '1e142c09-9e63-4d2e-8ce7-a00df26cf834',
     }
     
+    # Known programme image URLs (for programmes where auto-extraction doesn't work reliably)
+    KNOWN_PROGRAMME_IMAGES = {
+        'sunset-with-tangela': 'https://media.fbi.radio/images/sunset%20with%20tangela-800x450.jpg',
+        'utility-fog': 'https://media.fbi.radio/images/utility%20fog%20with%20peter%20hollo-800x450.jpg',
+    }
+    
     def __init__(self, program_slug: str):
         """
         Initialize scraper for a specific program.
@@ -513,6 +519,77 @@ class FBIRadioScraper:
         
         return find_by_ref_recursive(json_data)
     
+    def _find_programme_in_json(self, json_data, programme_slug: str):
+        """Find programme object in JSON by slug."""
+        if not programme_slug or not json_data:
+            return None
+        
+        # Normalize the search term (extract just the slug part if it's a full URL)
+        search_term = programme_slug
+        if '/' in search_term:
+            slug_match = re.search(r'/([^/]+)$', search_term)
+            if slug_match:
+                search_term = slug_match.group(1)
+        
+        def find_programme_recursive(data):
+            """Recursively find programme object."""
+            if isinstance(data, dict):
+                # Check if this is a programme object (has 'title', 'slug', 'image')
+                # Programmes have 'slug' but not 'airedAt' (episodes have 'airedAt')
+                if 'slug' in data and 'title' in data and 'airedAt' not in data:
+                    slug = data.get('slug', '')
+                    # Match by slug (partial or exact)
+                    if search_term in slug or slug == search_term or slug.endswith(search_term):
+                        return data
+                
+                # Recursively search
+                for value in data.values():
+                    if isinstance(value, (dict, list)):
+                        result = find_programme_recursive(value)
+                        if result:
+                            return result
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, (dict, list)):
+                        result = find_programme_recursive(item)
+                        if result:
+                            return result
+            return None
+        
+        return find_programme_recursive(json_data)
+    
+    def _is_generic_image(self, url: str) -> bool:
+        """Check if image URL is a generic FBi Radio image (not programme-specific)."""
+        if not url:
+            return True
+        
+        # Normalize URL for comparison
+        url_lower = url.lower()
+        
+        # Generic image patterns to exclude (only exclude truly generic FBi Radio images)
+        # These are images that appear on many programme pages but aren't programme-specific
+        generic_patterns = [
+            'fbi-volunteers',  # Generic volunteer support image
+            'supportfbi',      # Generic support FBi image
+            'syd_images_web',  # Generic Sydney images
+        ]
+        
+        # Extract filename from URL to check more precisely
+        filename_match = re.search(r'/([^/]+)\.jpg', url_lower)
+        if filename_match:
+            filename = filename_match.group(1)
+            # Check if filename starts with generic patterns
+            for pattern in generic_patterns:
+                if filename.startswith(pattern):
+                    return True
+        
+        # Also check if pattern appears in URL path
+        for pattern in generic_patterns:
+            if f'/{pattern}' in url_lower:
+                return True
+        
+        return False
+    
     def extract_image_from_json(self, json_data):
         """Extract image URL from JSON data for programme icons.
         
@@ -535,23 +612,28 @@ class FBIRadioScraper:
                 if 'sizes' in data:
                     sizes = data.get('sizes')
                     if isinstance(sizes, dict):
-                        # Try wide_2000 first for programme icons
-                        for size_key in ['wide_2000', 'opengraph', 'auto_2000', 'landscape_2000']:
+                        # Try programme icon sizes in priority order:
+                        # wide_2000 (2000x1125), opengraph (1200x630), wide_800 (800x450)
+                        for size_key in ['wide_2000', 'opengraph', 'wide_800', 'auto_2000', 'landscape_2000', 'auto_800', 'landscape_800']:
                             if size_key in sizes and isinstance(sizes[size_key], dict):
                                 url = sizes[size_key].get('url')
                                 if url and url.startswith('http'):
                                     found_urls.append((url, size_key))
-                                    return url
+                                    # Return immediately for high-priority sizes
+                                    if size_key in ['wide_2000', 'opengraph', 'wide_800']:
+                                        return url
                 
                 # Also check direct keys for sizes
-                for size_key in ['wide_2000', 'opengraph', 'auto_2000', 'landscape_2000']:
+                for size_key in ['wide_2000', 'opengraph', 'wide_800', 'auto_2000', 'landscape_2000', 'auto_800', 'landscape_800']:
                     if size_key in data:
                         size_obj = data[size_key]
                         if isinstance(size_obj, dict):
                             url = size_obj.get('url')
                             if url and url.startswith('http'):
                                 found_urls.append((url, size_key))
-                                return url
+                                # Return immediately for high-priority sizes
+                                if size_key in ['wide_2000', 'opengraph', 'wide_800']:
+                                    return url
                 
                 # Recursively search nested structures
                 for value in data.values():
@@ -571,8 +653,8 @@ class FBIRadioScraper:
         
         # If we found URLs but didn't return early, use the first one
         if not result and found_urls:
-            # Sort by preference
-            preferred = ['wide_2000', 'opengraph', 'auto_2000']
+            # Sort by preference: wide_2000 > opengraph > wide_800 > others
+            preferred = ['wide_2000', 'opengraph', 'wide_800', 'auto_2000', 'landscape_2000', 'auto_800', 'landscape_800']
             
             for pref in preferred:
                 for url, size in found_urls:
@@ -590,36 +672,144 @@ class FBIRadioScraper:
         Returns:
             Image URL or None
         """
-        # First try extracting from JSON data
+        # Check if we have a hardcoded override for this programme
+        if self.program_slug in self.KNOWN_PROGRAMME_IMAGES:
+            return self.KNOWN_PROGRAMME_IMAGES[self.program_slug]
+        
+        # First try extracting from JSON data - find the programme object specifically
         json_data = self.extract_json_data(html)
         if json_data:
+            # Find the programme object in JSON (should have 'title', 'slug', and 'image')
+            programme_obj = self._find_programme_in_json(json_data, self.program_slug)
+            if programme_obj and programme_obj.get('image'):
+                # Extract image from programme object
+                image_ref = programme_obj.get('image')
+                if isinstance(image_ref, dict):
+                    if '__ref' in image_ref:
+                        # Find image object by reference
+                        ref = image_ref['__ref']
+                        image_obj = self._find_image_by_ref(json_data, ref)
+                        if image_obj:
+                            image_url = self.extract_image_from_json(image_obj)
+                            if image_url:
+                                return image_url
+                    else:
+                        # Direct image object
+                        image_url = self.extract_image_from_json(image_ref)
+                        if image_url:
+                            return image_url
+            
+            # Fallback: search JSON recursively if programme object not found
             image_url = self.extract_image_from_json(json_data)
-            if image_url:
+            if image_url and not self._is_generic_image(image_url):
                 return image_url
         
         # Fallback: search HTML for image URLs
-        # Look for media.fbi.radio/images URLs in img tags or JSON
-        image_patterns = [
-            r'https://media\.fbi\.radio/images/[^"\'\s\)]+-2000x\d+\.jpg',
-            r'https://media\.fbi\.radio/images/[^"\'\s\)]+\.jpg',
-            r'"url"\s*:\s*"https://media\.fbi\.radio/images/[^"]+\.jpg"',
+        # Collect all matches first to prioritize correctly
+        all_matches = []
+        
+        # Priority patterns for programme images:
+        # 1. wide_2000 format (e.g., 2000x1125) - typical for programme icons
+        # 2. opengraph format (e.g., 1200x630) - social media preview images
+        # 3. wide format (e.g., 800x450) - smaller programme icons
+        # These patterns need to handle URL-encoded spaces (%20) and regular spaces
+        # Use .+? to match any characters including spaces and %20
+        high_priority_patterns = [
+            # Patterns for URLs in JSON (with quotes and url key)
+            (r'"url"\s*:\s*"https://media\.fbi\.radio/images/[^"]+-2000x11\d{2}\.jpg"', ['wide_2000']),
+            (r'"url"\s*:\s*"https://media\.fbi\.radio/images/[^"]+-1200x630\.jpg"', ['opengraph']),
+            (r'"url"\s*:\s*"https://media\.fbi\.radio/images/[^"]+-800x450\.jpg"', ['wide_800']),
+            # Patterns for bare URLs (can have spaces or %20)
+            (r'https://media\.fbi\.radio/images/[^"\'\s\)]+-2000x11\d{2}\.jpg', ['wide_2000']),
+            (r'https://media\.fbi\.radio/images/[^"\'\s\)]+-1200x630\.jpg', ['opengraph']),
+            (r'https://media\.fbi\.radio/images/[^"\'\s\)]+-800x450\.jpg', ['wide_800']),
+            # Patterns for URLs with URL-encoded spaces (%20)
+            # Match %20 or spaces, handle multiple words
+            (r'https://media\.fbi\.radio/images/.+?-2000x11\d{2}\.jpg', ['wide_2000']),
+            (r'https://media\.fbi\.radio/images/.+?-1200x630\.jpg', ['opengraph']),
+            (r'https://media\.fbi\.radio/images/.+?-800x450\.jpg', ['wide_800']),
         ]
         
-        for pattern in image_patterns:
+        # First pass: look for high-priority programme icon sizes
+        for pattern, labels in high_priority_patterns:
             matches = re.findall(pattern, html, re.I)
             for match in matches:
                 # Extract URL from match
                 if 'url' in match:
+                    # Extract URL from JSON format: "url": "https://..."
                     url_match = re.search(r'"https://media\.fbi\.radio/images/[^"]+\.jpg"', match)
                     if url_match:
-                        return url_match.group(0).strip('"')
+                        url = url_match.group(0).strip('"')
+                        # Handle URL encoding (normalize spaces to %20)
+                        url = url.replace(' ', '%20')
+                        # Filter out generic images
+                        if self._is_generic_image(url):
+                            continue
+                        # Only process if it matches our target sizes
+                        if '-2000x11' in url or '-1200x630' in url or '-800x450' in url:
+                            # Check if URL already in matches list
+                            if url not in [m[0] for m in all_matches]:
+                                all_matches.append((url, labels[0]))
+                            # Return immediately if it's a high-priority format
+                            if labels[0] in ['wide_2000', 'opengraph', 'wide_800']:
+                                return url
                 elif match.startswith('http'):
-                    # Prefer 2000x width images for programme icons
-                    if '-2000x' in match:
-                        return match
-                    # Otherwise return first match
-                    if not any('-2000x' in m for m in matches):
-                        return match
+                    # Normalize spaces to %20 for consistency
+                    url = match.replace(' ', '%20')
+                    # Filter out generic images
+                    if self._is_generic_image(url):
+                        continue
+                    # Only process if it matches our target sizes
+                    if '-2000x11' in url or '-1200x630' in url or '-800x450' in url:
+                        if url not in [m[0] for m in all_matches]:
+                            all_matches.append((url, labels[0]))
+                        # Return immediately if it's a high-priority format
+                        if labels[0] in ['wide_2000', 'opengraph', 'wide_800']:
+                            return url
+        
+        # If we found high-priority matches, return the first one (non-generic)
+        if all_matches:
+            # Sort by priority: wide_2000 > opengraph > wide_800
+            priority_order = ['wide_2000', 'opengraph', 'wide_800']
+            for priority in priority_order:
+                for url, label in all_matches:
+                    if label == priority and not self._is_generic_image(url):
+                        return url
+            # Return first non-generic match if no priority match found
+            for url, label in all_matches:
+                if not self._is_generic_image(url):
+                    return url
+            # Last resort: return first match even if generic
+            if all_matches:
+                return all_matches[0][0]
+        
+        # Second pass: look for any other programme images (fallback)
+        fallback_patterns = [
+            r'"url"\s*:\s*"https://media\.fbi\.radio/images/[^"]+\.jpg"',
+            r'https://media\.fbi\.radio/images/[^"\'\s\)]+\.jpg',
+        ]
+        
+        for pattern in fallback_patterns:
+            matches = re.findall(pattern, html, re.I)
+            for match in matches:
+                if 'url' in match:
+                    url_match = re.search(r'"https://media\.fbi\.radio/images/[^"]+\.jpg"', match)
+                    if url_match:
+                        url = url_match.group(0).strip('"').replace(' ', '%20')
+                        # Filter out generic images
+                        if self._is_generic_image(url):
+                            continue
+                        # Skip episode-specific images (smaller square formats)
+                        # Prefer larger/wider images that are likely programme icons
+                        if '-320x320' not in url and '-320x' not in url:
+                            return url
+                elif match.startswith('http'):
+                    url = match.replace(' ', '%20')
+                    # Filter out generic images
+                    if self._is_generic_image(url):
+                        continue
+                    if '-320x320' not in url and '-320x' not in url:
+                        return url
         
         return None
     
