@@ -29,6 +29,8 @@ class FBIRadioScraper:
         'jack-off': '85ea9d91-cb57-46c4-a9c6-abe601048b69',
         'loose-joints': 'e8d27dbf-88c7-4901-9560-b37b0064b8ec',
         'wildcard-with-stuart-coupe': 'cec7fc63-681b-4126-a98c-b37d00232daa',
+        'sunset-with-tangela': '018aa123-6990-463e-8983-b37f0095b36a',
+        'utility-fog': '1e142c09-9e63-4d2e-8ce7-a00df26cf834',
     }
     
     def __init__(self, program_slug: str):
@@ -891,6 +893,8 @@ def main():
         ('jack-off', 'Jack Off'),
         ('loose-joints', 'Loose Joints'),
         ('wildcard-with-stuart-coupe', 'Wildcard With Stuart Coupe'),
+        ('sunset-with-tangela', 'Sunset with Tangela'),
+        ('utility-fog', 'Utility Fog'),
     ]
     
     for program_slug, program_name in programs:
