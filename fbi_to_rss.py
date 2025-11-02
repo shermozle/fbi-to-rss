@@ -476,6 +476,153 @@ class FBIRadioScraper:
                     return result
         return None
     
+    def _find_image_by_ref(self, json_data, ref: str):
+        """Find image object by reference (e.g., "Image:...")."""
+        if not ref or not json_data:
+            return None
+        
+        # Extract the ID part from reference (e.g., "Image:66dcbfda3ac847f6e76d534a")
+        ref_id = ref.split(':')[-1] if ':' in ref else ref
+        
+        def find_by_ref_recursive(data):
+            """Recursively find object with matching ID."""
+            if isinstance(data, dict):
+                # Check if this is the image object we're looking for
+                obj_id = data.get('id', '')
+                if obj_id == ref_id:
+                    return data
+                
+                # Check __typename and id combination
+                typename = data.get('__typename', '')
+                if 'Image' in typename and obj_id == ref_id:
+                    return data
+                
+                # Recursively search
+                for value in data.values():
+                    if isinstance(value, (dict, list)):
+                        result = find_by_ref_recursive(value)
+                        if result:
+                            return result
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, (dict, list)):
+                        result = find_by_ref_recursive(item)
+                        if result:
+                            return result
+            return None
+        
+        return find_by_ref_recursive(json_data)
+    
+    def extract_image_from_json(self, json_data):
+        """Extract image URL from JSON data for programme icons.
+        
+        Args:
+            json_data: JSON data structure
+        
+        Returns:
+            Image URL or None
+        """
+        if not json_data:
+            return None
+        
+        # URLs found during search
+        found_urls = []
+        
+        def find_image_recursive(data):
+            """Recursively find image objects in JSON."""
+            if isinstance(data, dict):
+                # Check if this is an Image object with sizes
+                if 'sizes' in data:
+                    sizes = data.get('sizes')
+                    if isinstance(sizes, dict):
+                        # Try wide_2000 first for programme icons
+                        for size_key in ['wide_2000', 'opengraph', 'auto_2000', 'landscape_2000']:
+                            if size_key in sizes and isinstance(sizes[size_key], dict):
+                                url = sizes[size_key].get('url')
+                                if url and url.startswith('http'):
+                                    found_urls.append((url, size_key))
+                                    return url
+                
+                # Also check direct keys for sizes
+                for size_key in ['wide_2000', 'opengraph', 'auto_2000', 'landscape_2000']:
+                    if size_key in data:
+                        size_obj = data[size_key]
+                        if isinstance(size_obj, dict):
+                            url = size_obj.get('url')
+                            if url and url.startswith('http'):
+                                found_urls.append((url, size_key))
+                                return url
+                
+                # Recursively search nested structures
+                for value in data.values():
+                    if isinstance(value, (dict, list)):
+                        result = find_image_recursive(value)
+                        if result:
+                            return result
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, (dict, list)):
+                        result = find_image_recursive(item)
+                        if result:
+                            return result
+            return None
+        
+        result = find_image_recursive(json_data)
+        
+        # If we found URLs but didn't return early, use the first one
+        if not result and found_urls:
+            # Sort by preference
+            preferred = ['wide_2000', 'opengraph', 'auto_2000']
+            
+            for pref in preferred:
+                for url, size in found_urls:
+                    if size == pref:
+                        return url
+            
+            # Return first URL found
+            return found_urls[0][0]
+        
+        return result
+    
+    def extract_programme_image(self, html: str) -> Optional[str]:
+        """Extract programme icon/image from programme page HTML.
+        
+        Returns:
+            Image URL or None
+        """
+        # First try extracting from JSON data
+        json_data = self.extract_json_data(html)
+        if json_data:
+            image_url = self.extract_image_from_json(json_data)
+            if image_url:
+                return image_url
+        
+        # Fallback: search HTML for image URLs
+        # Look for media.fbi.radio/images URLs in img tags or JSON
+        image_patterns = [
+            r'https://media\.fbi\.radio/images/[^"\'\s\)]+-2000x\d+\.jpg',
+            r'https://media\.fbi\.radio/images/[^"\'\s\)]+\.jpg',
+            r'"url"\s*:\s*"https://media\.fbi\.radio/images/[^"]+\.jpg"',
+        ]
+        
+        for pattern in image_patterns:
+            matches = re.findall(pattern, html, re.I)
+            for match in matches:
+                # Extract URL from match
+                if 'url' in match:
+                    url_match = re.search(r'"https://media\.fbi\.radio/images/[^"]+\.jpg"', match)
+                    if url_match:
+                        return url_match.group(0).strip('"')
+                elif match.startswith('http'):
+                    # Prefer 2000x width images for programme icons
+                    if '-2000x' in match:
+                        return match
+                    # Otherwise return first match
+                    if not any('-2000x' in m for m in matches):
+                        return match
+        
+        return None
+    
     def get_omny_audio_url(self, omny_clip_id, json_data: Optional[Dict] = None, html: Optional[str] = None) -> Optional[str]:
         """Construct Omny Studio direct audio URL from clip ID.
         
@@ -630,15 +777,22 @@ class FBIRadioScraper:
         
         return None
     
-    def get_episodes(self) -> Tuple[List[Dict], str]:
-        """Get all episodes with their metadata."""
+    def get_episodes(self) -> Tuple[List[Dict], str, Optional[str]]:
+        """Get all episodes with their metadata.
+        
+        Returns:
+            Tuple of (episodes list, program_name, program_image_url)
+        """
         html = self.fetch_page(self.program_url)
         if not html:
-            return [], self.program_slug
+            return [], self.program_slug, None
         
         soup = BeautifulSoup(html, 'lxml')
         program_name = soup.find('h1')
         program_name = program_name.get_text(strip=True) if program_name else self.program_slug
+        
+        # Extract programme image
+        program_image = self.extract_programme_image(html)
         
         # Try to extract from JSON first
         json_data = self.extract_json_data(html)
@@ -758,7 +912,7 @@ class FBIRadioScraper:
         
         # Put episodes without dates at the end
         episodes = valid_episodes + episodes_without_dates
-        return episodes, program_name
+        return episodes, program_name, program_image
 
 
 class RSSFeedGenerator:
@@ -768,8 +922,14 @@ class RSSFeedGenerator:
         self.program_name = program_name
         self.program_url = program_url
     
-    def generate_feed(self, episodes: List[Dict], output_file: str):
-        """Generate RSS feed file from episodes."""
+    def generate_feed(self, episodes: List[Dict], output_file: str, program_image: Optional[str] = None):
+        """Generate RSS feed file from episodes.
+        
+        Args:
+            episodes: List of episode dictionaries
+            output_file: Path to output RSS file
+            program_image: URL to programme icon/image
+        """
         fg = FeedGenerator()
         fg.title(self.program_name)
         fg.link(href=self.program_url, rel='alternate')
@@ -777,8 +937,18 @@ class RSSFeedGenerator:
         fg.language('en')
         fg.generator('fbi-to-rss')
         
-        # Add podcast-specific tags
-        fg.load_extension('podcast')
+        # Add programme image if available
+        if program_image:
+            fg.image(program_image)
+            # Also add iTunes image for podcast compatibility
+            fg.load_extension('podcast')
+            try:
+                fg.podcast.itunes_image(program_image)
+            except:
+                pass
+        else:
+            fg.load_extension('podcast')
+        
         fg.podcast.itunes_category('Music')
         
         # Ensure episodes are sorted (feedgen might not preserve order)
@@ -903,7 +1073,7 @@ def main():
         print(f"{'='*60}\n")
         
         scraper = FBIRadioScraper(program_slug)
-        episodes, fetched_name = scraper.get_episodes()
+        episodes, fetched_name, program_image = scraper.get_episodes()
         
         if not episodes:
             print(f"No episodes found for {program_name}")
@@ -913,7 +1083,7 @@ def main():
         output_file = f"{program_slug.replace('-', '_')}_feed.xml"
         
         generator = RSSFeedGenerator(fetched_name or program_name, program_url)
-        generator.generate_feed(episodes, output_file)
+        generator.generate_feed(episodes, output_file, program_image)
         
         print(f"\n{len(episodes)} episodes processed for {program_name}")
 
