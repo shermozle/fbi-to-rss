@@ -1172,6 +1172,13 @@ class RSSFeedGenerator:
             if episode['description']:
                 fe.description(episode['description'])
             
+            # Add programme image to each episode entry
+            if program_image:
+                try:
+                    fe.podcast.itunes_image(program_image)
+                except:
+                    pass
+            
             # Add audio enclosure if available
             if episode.get('audio_url'):
                 fe.enclosure(episode['audio_url'], 0, 'audio/mpeg')
